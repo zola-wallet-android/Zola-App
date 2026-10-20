@@ -1,0 +1,77 @@
+
+name: Build Zola Wallet APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get repository files
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Extract Zola project
+        run: |
+          unzip -q zola-android-cloud-build.zip -d extracted
+          cp -a extracted/zola-android-cloud-build/. .
+          sdkmanager --licenses || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Create signing key
+        run: |
+          mkdir -p signing
+          STORE_PASS="$(openssl rand -hex 24)"
+          KEY_PASS="$(openssl rand -hex 24)"
+          echo "$STORE_PASS" > signing/store-password.txt
+          echo "$KEY_PASS" > signing/key-password.txt
+          echo "zola" > signing/key-alias.txt
+          keytool -genkeypair -noprompt \
+            -keystore signing/zola-release.jks \
+            -storepass "$STORE_PASS" \
+            -keypass "$KEY_PASS" \
+            -alias zola -keyalg RSA -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Zola Wallet, O=Zola, C=NG"
+
+      - name: Build APK
+        env:
+          ZOLA_KEYSTORE_PATH: signing/zola-release.jks
+          ZOLA_KEY_ALIAS: zola
+        run: |
+          export ZOLA_KEYSTORE_PASSWORD="$(cat signing/store-password.txt)"
+          export ZOLA_KEY_PASSWORD="$(cat signing/key-password.txt)"
+          gradle --no-daemon assembleRelease
+
+      - name: Save signing backup
+        run: |
+          mkdir -p signing-backup
+          cp signing/zola-release.jks signing/store-password.txt signing/key-password.txt signing/key-alias.txt signing-backup/
+          cd signing-backup
+          zip -q -r ../zola-signing-backup-PRIVATE.zip .
+
+      - name: Upload APK and signing backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: zola-wallet-release
+          path: |
+            app/build/outputs/apk/release/*.apk
+            zola-signing-backup-PRIVATE.zip
+          retention-days: 7
